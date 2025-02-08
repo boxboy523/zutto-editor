@@ -1,0 +1,42 @@
+{
+    "Normal": {
+        "Insert": [["CharAny"]],
+        "InsertUpper": [["Shift", "CharAny"]],
+        "Tab": [["Tab"]],
+        "NewLine": [["Enter"]],
+        "NewLineBelow": [["Ctrl", "Enter"]],
+        "NewLineAbove": [["Ctrl", "Shift", "Enter"]],
+        "Delete": [["Backspace"]],
+        "DeleteBackward": [["Delete"], ["Ctrl", "Backspace"]],
+        "CursorForward": [["Ctrl", {"Char": "D"}], ["Right"]],
+        "CursorBackward": [["Ctrl", {"Char": "A"}], ["Left"]],
+        "CursorUp": [["Ctrl", {"Char": "W"}], ["Up"]],
+        "CursorDown": [["Ctrl", {"Char": "S"}], ["Down"]],
+        "CursorStart": [["Ctrl", {"Char": "Q"}]],
+        "CursorEnd": [["Ctrl", {"Char": "E"}]],
+        "NextWord": [["Alt", {"Char": "D"}], ["Alt", "Right"]],
+        "PreviousWord": [["Alt", {"Char": "A"}], ["Alt", "Left"]],
+        "NextBlock": [["Alt", {"Char": "S"}], ["Alt", "Down"]],
+        "PreviousBlock": [["Alt", {"Char": "W"}], ["Alt", "Up"]],
+        "Copy": [["Ctrl", {"Char": "C"}]],
+        "Cut": [["Ctrl", {"Char": "X"}]],
+        "Paste": [["Ctrl", {"Char": "V"}]],
+        "Undo": [["Ctrl", {"Char": "Z"}]],
+        "Redo": [["Ctrl", {"Char": "Y"}]],
+        "Cmd": [["Ctrl", "Space"]],
+        "Find": [["Ctrl", {"Char": "F"}]]
+    },
+    "Cmd": {
+        "Quit": [[{"Char": "Q"}]],
+        "Save": [[{"Char": "S"}]],
+        "Open": [[{"Char": "O"}]],
+        "StartOfText": [[{"Char": "A"}]],
+        "EndOfText": [[{"Char": "E"}]],
+        "ExitCmd": [["Space"]]
+    },
+    "Find": {
+        "FindNext": [[{"Char": "N"}]],
+        "FindPrevious": [["Shift", {"Char": "N"}]],
+        "ExitFind": [["Space"]]
+    }
+}
