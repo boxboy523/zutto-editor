@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 anyhow = "1.0.95"
+async-stream = "0.3.6"
 crossterm = { version = "0.28.1", features = ["event-stream"] }
 log = "0.4.25"
 log4rs = "1.3.0"

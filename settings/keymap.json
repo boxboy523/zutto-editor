@@ -2,6 +2,7 @@
     "Normal": {
         "Insert": [["CharAny"]],
         "InsertUpper": [["Shift", "CharAny"]],
+        "Space": [["Space"]],
         "Tab": [["Tab"]],
         "NewLine": [["Enter"]],
         "NewLineBelow": [["Ctrl", "Enter"]],
@@ -14,6 +15,8 @@
         "CursorDown": [["Ctrl", {"Char": "S"}], ["Down"]],
         "CursorStart": [["Ctrl", {"Char": "Q"}]],
         "CursorEnd": [["Ctrl", {"Char": "E"}]],
+        "NextBuffer": [["Ctrl", "Tab"]],
+        "PreviousBuffer": [["Ctrl", "Shift", "Tab"]],
         "NextWord": [["Alt", {"Char": "D"}], ["Alt", "Right"]],
         "PreviousWord": [["Alt", {"Char": "A"}], ["Alt", "Left"]],
         "NextBlock": [["Alt", {"Char": "S"}], ["Alt", "Down"]],
@@ -24,19 +27,40 @@
         "Undo": [["Ctrl", {"Char": "Z"}]],
         "Redo": [["Ctrl", {"Char": "Y"}]],
         "Cmd": [["Ctrl", "Space"]],
-        "Find": [["Ctrl", {"Char": "F"}]]
+        "Find": [["Ctrl", {"Char": "F"}]],
+        "LineMode": [["Ctrl", {"Char": "L"}], ["Ctrl", {"Char": "/"}]]
     },
     "Cmd": {
         "Quit": [[{"Char": "Q"}]],
         "Save": [[{"Char": "S"}]],
+        "SaveAs": [["Ctrl", {"Char": "S"}]],
         "Open": [[{"Char": "O"}]],
         "StartOfText": [[{"Char": "A"}]],
         "EndOfText": [[{"Char": "E"}]],
-        "ExitCmd": [["Space"]]
+        "LineMode": [[{"Char": "/"}]],
+        "Normal": [["Space"], ["Alt", "Space"]]
     },
     "Find": {
+        "LineMode": [[{"Char": "/"}, {"Char": "F"}]],
         "FindNext": [[{"Char": "N"}]],
         "FindPrevious": [["Shift", {"Char": "N"}]],
-        "ExitFind": [["Space"]]
+        "Normal": [["Space"], ["Alt", "Space"]]
+    },
+    "LineInsert": {
+        "LineInsert": [["CharAny"]],
+        "LineInsertUpper": [["Shift", "CharAny"]],
+        "LineSpace": [["Space"]],
+        "LineDelete": [["Backspace"]],
+        "LineDeleteBackward": [["Delete"], ["Ctrl", "Backspace"]],
+        "LineCursorForward": [["Ctrl", {"Char": "D"}], ["Right"]],
+        "LineCursorBackward": [["Ctrl", {"Char": "A"}], ["Left"]],
+        "LinePrevious": [["Ctrl", {"Char": "W"}], ["Up"]],
+        "LineNext": [["Ctrl", {"Char": "S"}], ["Down"]],
+        "LineStart": [["Ctrl", {"Char": "Q"}]],
+        "LineEnd": [["Ctrl", {"Char": "E"}]],
+        "LineExecute": [["Ctrl", {"Char": "X"}], ["Enter"]],
+        "Normal": [["Alt", "Space"]],
+        "Cmd": [["Ctrl", "Space"]],
+        "Find": [["Ctrl", {"Char": "F"}]]
     }
 }

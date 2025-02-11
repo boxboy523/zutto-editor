@@ -1,16 +1,22 @@
-use anyhow::Result;
-use buffer::Buffer;
+use std::{collections::HashMap, hash::Hash, sync::Arc};
+
+use anyhow::{Result, Error};
+use buffer::{Buffer, Pos};
 use key::{open_keymaps, Keymap};
 use log::debug;
-use crossterm::{cursor, event::{self, EventStream, KeyboardEnhancementFlags, PushKeyboardEnhancementFlags}, execute, queue, style::{self, Print}, terminal::{self, Clear}};
+use crossterm::{event::{self, EventStream}, terminal};
+use render::Renderer;
+use ropey::Rope;
 use strum_macros::IntoStaticStr;
+use tokio::sync::{mpsc::{self, Receiver}, Mutex};
 use tokio_stream::StreamExt;
-use serde::{Serialize,Deserialize};
+use serde::{Deserialize, Serialize};
 
 pub mod key;
 pub mod buffer;
+pub mod render;
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 enum TabType {
     Spaces,
     Tabs,
@@ -22,8 +28,8 @@ pub struct Size {
     pub height: u16,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-struct Setting {
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Setting {
     line_numbers: bool,
     tab_size: usize,
     tab_type: TabType,
@@ -34,6 +40,7 @@ struct Setting {
 pub enum Action {
     Insert(#[serde(skip)] char),
     InsertUpper(#[serde(skip)] char),
+    Space,
     Tab,
     NewLine,
     NewLineBelow,
@@ -59,217 +66,266 @@ pub enum Action {
     Cmd,
     Find,
     Save,
+    SaveAs,
     Open,
     StartOfText,
     EndOfText,
-    ExitCmd,
+    Normal,
     FindNext,
     FindPrevious,
-    ExitFind,
+    LineMode,
+    LineInsert(#[serde(skip)] char),
+    LineInsertUpper(#[serde(skip)] char),
+    LineSpace,
+    LineDelete,
+    LineDeleteBackward,
+    LineCursorForward,
+    LineCursorBackward,
+    LinePrevious,
+    LineNext,
+    LineStart,
+    LineEnd,
+    LineExecute,
 }
 
 
-#[derive(Debug, IntoStaticStr, Clone, Copy)]
-enum KeymapState {
+#[derive(Debug, IntoStaticStr, Clone, Copy, Hash, Serialize, Deserialize,PartialEq, Eq)]
+pub enum KeymapState {
     Normal,
     Cmd,
     Find,
+    LineInsert,
 } 
 
-pub struct Editor<'w, W> 
-    where W: std::io::Write
-{
-    buffers: Vec<Buffer>,
-    write: &'w mut W,
-    size: Size,
-    keymap_state: KeymapState,
-    setting: Setting,
+#[derive(Debug)]
+pub struct EventHandler {
+    action_channel_tx: tokio::sync::mpsc::Sender<Action>,
+    keymaps: HashMap<KeymapState, Keymap>,
+    reader: EventStream,
+    editor: EditorInfo,
 }
 
-impl<'w, W> Editor<'w, W> 
-    where W: std::io::Write
-{
-    pub fn new(w: &'w mut W) -> Self 
-        where W: std::io::Write
+impl EventHandler {
+    pub fn new(action_channel_tx: tokio::sync::mpsc::Sender<Action>, editor: EditorInfo) -> Self 
     {
-        let rawsize = terminal::size().unwrap();
-        let size = Size {
-            width: rawsize.0,
-            height: rawsize.1,
-        };
         Self {
-            buffers: vec![Buffer::new(size)],
-            write: w,
-            size,
-            keymap_state: KeymapState::Normal,
-            setting: serde_json::from_reader(std::fs::File::open("settings/default.json").unwrap()).unwrap(),
+            action_channel_tx,
+            keymaps: open_keymaps("settings/keymap.json").unwrap(),
+            reader: EventStream::new(),
+            editor,
         }
     }
 
     pub async fn run(&mut self) -> Result<()> {
-        terminal::enable_raw_mode()?;
-        execute!(
-            self.write,
-            terminal::Clear(terminal::ClearType::All),
-            style::ResetColor,
-            event::EnableMouseCapture,
-            cursor::Show,
-            cursor::MoveTo(0, 0),
-        )?;
-        queue!(
-            self.write,
-            PushKeyboardEnhancementFlags(
-                KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES |
-                KeyboardEnhancementFlags::REPORT_EVENT_TYPES |
-                KeyboardEnhancementFlags::REPORT_ALL_KEYS_AS_ESCAPE_CODES
-            )
-        )?;
-        execute!(self.write, cursor::MoveTo(0, 0))?;
-        let mut reader = EventStream::new();
-        let keymaps = open_keymaps("settings/keymap.json")?;
-        'exit:
-        while let Some(event) = reader.next().await {
-            let keymap = keymaps.get(self.keymap_state.into()).unwrap();
+        while let Some(event) = self.reader.next().await {
+            debug!("Event: {:?}", event);
+            {
+                let running = self.editor.running.lock().await;
+                if *running == false {
+                    return Ok(());
+                }
+            }
+            let state = self.editor.state.lock().await;
+            let keymap = self.keymaps.get(&state).unwrap();
             if let Ok(event) = event {
                 match event {
                     event::Event::Key(event) => {
                         let key = Keymap::read(event);
                         if let Some(key) = key {
-                            match keymap.get_action(key) {
-                                Some(Action::Quit) => {
-                                    break 'exit;
-                                }
-                                Some(Action::Insert(c)) => {
-                                    self.buffers[0].insert_char(c, false);
-                                }
-                                Some(Action::InsertUpper(c)) => {
-                                    self.buffers[0].insert_char(c, true);
-                                }
-                                Some(Action::CursorUp) => {
-                                    self.buffers[0].cursor_up();
-                                }
-                                Some(Action::CursorDown) => {
-                                    self.buffers[0].cursor_down();
-                                }
-                                Some(Action::CursorForward) => {
-                                    self.buffers[0].cursor_forward();
-                                }
-                                Some(Action::CursorBackward) => {
-                                    self.buffers[0].cursor_backward();
-                                }
-                                Some(Action::CursorStart) => {
-                                    self.buffers[0].cursor_start();
-                                }
-                                Some(Action::CursorEnd) => {
-                                    self.buffers[0].cursor_end();
-                                }
-                                Some(Action::NewLine) => {
-                                    self.buffers[0].insert_newline();
-                                }
-                                Some(Action::Delete) => {
-                                    self.buffers[0].delete();
-                                }
-                                Some(Action::DeleteBackward) => {
-                                    self.buffers[0].delete_back();
-                                }
-                                Some(Action::Cmd) => {
-                                    self.keymap_state = KeymapState::Cmd;
-                                }
-                                Some(Action::ExitCmd) => {
-                                    self.keymap_state = KeymapState::Normal;
-                                }
-                                Some(Action::Find) => {
-                                    self.keymap_state = KeymapState::Find;
-                                }
-                                Some(Action::ExitFind) => {
-                                    self.keymap_state = KeymapState::Normal;
-                                }
-                                Some(Action::PreviousBlock) => {
-                                }
-                                Some(Action::NextBlock) => {
-                                }
-                                Some(a) => {
-                                    debug!("Action: {:?}", a);
-                                }
-                                None => {}
+                            if let Some(action) = keymap.get_action(&key) {
+                                self.action_channel_tx.send(action).await?;
                             }
                         }
                     }
                     _ => {}
                 }
             }
-            self.render()?;
         }
-        execute!(
-            self.write,
-            event::DisableMouseCapture,
-            terminal::Clear(terminal::ClearType::All),
-        )?;
-        terminal::disable_raw_mode()?;
 
         Ok(())
     }
-
-    fn render(&mut self) -> Result<()> {
-        execute!(self.write, cursor::Hide)?;
-        let scroll = self.buffers[0].scroll;
-        let mut lines = self.buffers[0].text.lines().skip(scroll);
-        let line_len = self.buffers[0].text.len_lines();
-        let line_num_padding = if self.setting.line_numbers {
-            numlen(line_len) + 1
-        } else {
-            0
-        };
-        for i in scroll..(self.size.height as usize + scroll) {
-            if self.setting.line_numbers {
-                queue!(
-                    self.write,
-                    cursor::MoveTo(0, i as u16 - scroll as u16),
-                )?;
-                execute!(
-                    self.write,
-                    Print(format!("{: >1$} ", i + 1, line_num_padding - 1)),
-                )?;
-            }
-            queue!(
-                self.write,
-                cursor::MoveTo(line_num_padding as u16, i as u16 - scroll as u16),
-            )?;
-            if i < line_len {
-                let mut to_print = lines.next().unwrap();
-                if to_print.chars().last().unwrap_or('\0') == '\n' {
-                    to_print = to_print.slice(..to_print.len_chars() - 1);
-                }
-                execute!(
-                    self.write,
-                    Print(to_print),
-                    Clear(terminal::ClearType::UntilNewLine),
-                )?;
-            } else {
-                execute!(
-                    self.write,
-                    Clear(terminal::ClearType::CurrentLine),
-                )?;
-            }
-        }
-        execute!(self.write, cursor::Show)?;
-        execute!(
-            self.write,
-            cursor::MoveTo(
-                self.buffers[0].cursor.col as u16 + line_num_padding as u16,
-                self.buffers[0].cursor.row as u16 - scroll as u16,
-            ),
-        )?;
-        Ok(())
-    }
-
 }
 
-fn numlen (mut num: usize) -> usize {
-    let mut len = 0;
-    while num > 0 {
-        num /= 10;
-        len += 1;
+#[derive(Debug, Clone)]
+pub struct EditorInfo
+{
+    pub size: Size,
+    pub setting: Setting,
+    pub buffers: Arc<Mutex<Vec<Buffer>>>,
+    pub state: Arc<Mutex<KeymapState>>,
+    pub running: Arc<Mutex<bool>>,
+    pub alart_tx: mpsc::Sender<Error>,
+}
+
+async fn process_action<W>(
+    mut action_rx: Receiver<Action>, 
+    editor: EditorInfo,
+    renderer: &mut Renderer<W>
+) -> Option<Action>
+    where W: std::io::Write
+{
+    let mut buffer_idx = 0;
+    let mut continued = false;
+    renderer.render(buffer_idx).await.unwrap();
+    loop {
+        if continued {
+            renderer.render(buffer_idx).await.unwrap();
+            continued = false;
+        }
+        debug!("Processing action");
+        let action = action_rx.recv().await.unwrap();
+        let mut buffers = editor.buffers.lock().await;
+        let mut state = editor.state.lock().await;
+        let mut running = editor.running.lock().await;
+        match action {
+            Action::Quit => {
+                *running = false;
+                return None;
+            }
+            Action::Insert(c) => {
+                buffers[buffer_idx].insert_char(c, false);
+            }
+            Action::InsertUpper(c) => {
+                buffers[buffer_idx].insert_char(c, true);
+            }
+            Action::Space => {
+                buffers[buffer_idx].insert_char(' ', false);
+            }
+            Action::CursorUp => {
+                buffers[buffer_idx].cursor_up();
+            }
+            Action::CursorDown => {
+                buffers[buffer_idx].cursor_down();
+            }
+            Action::CursorForward => {
+                buffers[buffer_idx].cursor_forward();
+            }
+            Action::CursorBackward => {
+                buffers[buffer_idx].cursor_backward();
+            }
+            Action::CursorStart => {
+                buffers[buffer_idx].cursor_start();
+            }
+            Action::CursorEnd => {
+                buffers[buffer_idx].cursor_end();
+            }
+            Action::NewLine => {
+                buffers[buffer_idx].insert_newline();
+            }
+            Action::Delete => {
+                buffers[buffer_idx].delete();
+            }
+            Action::DeleteBackward => {
+                buffers[buffer_idx].delete_back();
+            }
+            Action::Cmd => {
+                *state = KeymapState::Cmd;
+            }
+            Action::Open => {
+                let path = renderer.line_buffer.text.clone();
+                let path = path.trim();
+                let mut size = editor.size;
+                let pos = Pos{row: 0, col: 0};
+                size.height -= 1;
+                let data = match Buffer::from_file(size, pos, path){
+                    Ok(file) => {
+                        file
+                    }
+                    Err(e) => {
+                        editor.alart_tx.send(e).await.unwrap();
+                        continued = true;
+                        continue;
+                    }
+                };
+                buffers.push(data);
+                buffer_idx = buffers.len() - 1;
+            }
+            Action::Normal => {
+                *state = KeymapState::Normal;
+            }
+            Action::Find => {
+                *state = KeymapState::Find;
+            }
+            Action::LineMode => {
+                *state = KeymapState::LineInsert;
+            }
+            Action:: LineInsert(c) => {
+                renderer.line_buffer.insert_char(c, false);
+            }
+            Action::LineInsertUpper(c) => {
+                renderer.line_buffer.insert_char(c, true);
+            }
+            Action::LineSpace => {
+                renderer.line_buffer.insert_char(' ', false);
+            }
+            Action::LineCursorForward => {
+                renderer.line_buffer.cursor_forward();
+            }
+            Action::LineCursorBackward => {
+                renderer.line_buffer.cursor_backward();
+            }
+            Action::LineStart => {
+                renderer.line_buffer.cursor_start();
+            }
+            Action::LineEnd => {
+                renderer.line_buffer.cursor_end();
+            }
+            Action::LineDelete => {
+                renderer.line_buffer.delete();
+            }
+            Action::LineDeleteBackward => {
+                renderer.line_buffer.delete_back();
+            }
+            Action::PreviousBlock => {
+            }
+            Action::NextBlock => {
+            }
+            a => {
+                debug!("Action: {:?}", a);
+            }
+        };
+        drop(buffers);
+        drop(state);
+        renderer.render(buffer_idx).await.unwrap();
     }
-    len
+}
+
+pub async fn run() -> Result<()> {
+    log4rs::init_file("log4rs.yaml", Default::default())?;
+    let stdout = std::io::stdout();
+    let (action_channel_tx, action_channel_rx) = tokio::sync::mpsc::channel(100);
+    let (alart_channel_tx, alart_channel_rx) = tokio::sync::mpsc::channel(100);
+    let rawsize = terminal::size().unwrap();
+    let size = Size {
+        width: rawsize.0,
+        height: rawsize.1,
+    };
+    let setting = serde_json::from_reader(std::fs::File::open("settings/default.json")?)?;
+    let mut buffer_size = size;
+    buffer_size.height -= 1;
+    let buffers = Arc::new(Mutex::new(vec![Buffer::new(buffer_size, Pos{row: 0, col: 0})]));
+    let state = Arc::new(Mutex::new(KeymapState::Normal));
+    let running = Arc::new(Mutex::new(true));
+    let editor= EditorInfo {
+        size,
+        setting,
+        buffers,
+        state,
+        running,
+        alart_tx: alart_channel_tx,
+    };
+
+    let mut event_handler = EventHandler::new(action_channel_tx, editor.clone());
+    let mut renderer = Renderer::new(editor.clone(), stdout, alart_channel_rx);
+
+    renderer.init().unwrap();
+    
+    tokio::spawn(async move {
+        event_handler.run().await.unwrap();
+    });
+
+    process_action(action_channel_rx, editor.clone(), &mut renderer).await;
+
+    renderer.close().unwrap();    
+    Ok(())
 }
