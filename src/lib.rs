@@ -3,11 +3,12 @@ use std::{collections::HashMap, hash::Hash, sync::Arc};
 use anyhow::{Result, Error};
 use buffer::{Buffer, Pos};
 use key::{open_keymaps, Keymap};
-use log::debug;
 use crossterm::{event::{self, EventStream}, terminal};
+use log::debug;
+use regex::Regex;
 use render::Renderer;
-use ropey::Rope;
 use strum_macros::IntoStaticStr;
+use tab::Tab;
 use tokio::sync::{mpsc::{self, Receiver}, Mutex};
 use tokio_stream::StreamExt;
 use serde::{Deserialize, Serialize};
@@ -15,6 +16,9 @@ use serde::{Deserialize, Serialize};
 pub mod key;
 pub mod buffer;
 pub mod render;
+pub mod actions;
+pub mod tab;
+pub mod lineinput;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 enum TabType {
@@ -35,60 +39,6 @@ pub struct Setting {
     tab_type: TabType,
 }
 
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Hash)]
-pub enum Action {
-    Insert(#[serde(skip)] char),
-    InsertUpper(#[serde(skip)] char),
-    Space,
-    Tab,
-    NewLine,
-    NewLineBelow,
-    NewLineAbove,
-    Delete,
-    DeleteBackward,
-    CursorUp,
-    CursorDown,
-    CursorForward,
-    CursorBackward,
-    CursorStart,
-    CursorEnd,
-    NextWord,
-    PreviousWord,
-    NextBlock,
-    PreviousBlock,
-    Copy,
-    Cut,
-    Paste,
-    Undo,
-    Redo,
-    Quit,
-    Cmd,
-    Find,
-    Save,
-    SaveAs,
-    Open,
-    StartOfText,
-    EndOfText,
-    Normal,
-    FindNext,
-    FindPrevious,
-    LineMode,
-    LineInsert(#[serde(skip)] char),
-    LineInsertUpper(#[serde(skip)] char),
-    LineSpace,
-    LineDelete,
-    LineDeleteBackward,
-    LineCursorForward,
-    LineCursorBackward,
-    LinePrevious,
-    LineNext,
-    LineStart,
-    LineEnd,
-    LineExecute,
-}
-
-
 #[derive(Debug, IntoStaticStr, Clone, Copy, Hash, Serialize, Deserialize,PartialEq, Eq)]
 pub enum KeymapState {
     Normal,
@@ -99,14 +49,14 @@ pub enum KeymapState {
 
 #[derive(Debug)]
 pub struct EventHandler {
-    action_channel_tx: tokio::sync::mpsc::Sender<Action>,
+    action_channel_tx: tokio::sync::mpsc::Sender<String>,
     keymaps: HashMap<KeymapState, Keymap>,
     reader: EventStream,
     editor: EditorInfo,
 }
 
 impl EventHandler {
-    pub fn new(action_channel_tx: tokio::sync::mpsc::Sender<Action>, editor: EditorInfo) -> Self 
+    pub fn new(action_channel_tx: tokio::sync::mpsc::Sender<String>, editor: EditorInfo) -> Self 
     {
         Self {
             action_channel_tx,
@@ -118,7 +68,6 @@ impl EventHandler {
 
     pub async fn run(&mut self) -> Result<()> {
         while let Some(event) = self.reader.next().await {
-            debug!("Event: {:?}", event);
             {
                 let running = self.editor.running.lock().await;
                 if *running == false {
@@ -137,6 +86,16 @@ impl EventHandler {
                             }
                         }
                     }
+                    event::Event::Resize(_, _) => {
+                        let size = terminal::size().unwrap();
+                        self.editor.size = Size {
+                            width: size.0,
+                            height: size.1,
+                        };
+                        self.action_channel_tx.send(
+                            format!("Resize({},{})", size.0, size.1)
+                        ).await?;
+                    }
                     _ => {}
                 }
             }
@@ -151,142 +110,110 @@ pub struct EditorInfo
 {
     pub size: Size,
     pub setting: Setting,
-    pub buffers: Arc<Mutex<Vec<Buffer>>>,
     pub state: Arc<Mutex<KeymapState>>,
     pub running: Arc<Mutex<bool>>,
     pub alart_tx: mpsc::Sender<Error>,
 }
 
-async fn process_action<W>(
-    mut action_rx: Receiver<Action>, 
+async fn process_action(
+    mut action_rx: Receiver<String>, 
     editor: EditorInfo,
-    renderer: &mut Renderer<W>
-) -> Option<Action>
-    where W: std::io::Write
-{
-    let mut buffer_idx = 0;
+    renderer: &mut Renderer,
+    mut tabs : Vec<Box<dyn Tab>>,
+) {
+    type F = Box<dyn FnMut(&Action) -> Vec<actions::ActionReturn>>;
     let mut continued = false;
-    renderer.render(buffer_idx).await.unwrap();
+    let mut pre_selected_action = None;
+    let mut tab_idx = 0;
+    let mut clear = false;
+    let mut action_map: HashMap<&str, F>
+        = HashMap::new();
+    action_map.insert("NormalMode", Box::new(actions::normal_mode));
+    action_map.insert("CmdMode", Box::new(actions::cmd_mode));
+    action_map.insert("Quit", Box::new(actions::quit));
+    action_map.insert("FindMode", Box::new(actions::find_mode));
+    action_map.insert("LineMode", Box::new(actions::line_mode));
+    action_map.insert("NextTab", Box::new(actions::next_tab));
+    action_map.insert("PrevTab", Box::new(actions::prev_tab));
+    
+    renderer.render(&mut tabs, tab_idx, clear).await.unwrap();
     loop {
         if continued {
-            renderer.render(buffer_idx).await.unwrap();
+            renderer.render(&mut tabs, tab_idx, clear).await.unwrap();
             continued = false;
         }
-        debug!("Processing action");
-        let action = action_rx.recv().await.unwrap();
-        let mut buffers = editor.buffers.lock().await;
+        let action = if let Some(a) = pre_selected_action {
+            pre_selected_action = None;
+            a
+        } else {
+            let action = action_rx.recv().await.unwrap();
+            parse_action(&action, &renderer.line_input.text).unwrap()
+        };
         let mut state = editor.state.lock().await;
         let mut running = editor.running.lock().await;
-        match action {
-            Action::Quit => {
-                *running = false;
-                return None;
-            }
-            Action::Insert(c) => {
-                buffers[buffer_idx].insert_char(c, false);
-            }
-            Action::InsertUpper(c) => {
-                buffers[buffer_idx].insert_char(c, true);
-            }
-            Action::Space => {
-                buffers[buffer_idx].insert_char(' ', false);
-            }
-            Action::CursorUp => {
-                buffers[buffer_idx].cursor_up();
-            }
-            Action::CursorDown => {
-                buffers[buffer_idx].cursor_down();
-            }
-            Action::CursorForward => {
-                buffers[buffer_idx].cursor_forward();
-            }
-            Action::CursorBackward => {
-                buffers[buffer_idx].cursor_backward();
-            }
-            Action::CursorStart => {
-                buffers[buffer_idx].cursor_start();
-            }
-            Action::CursorEnd => {
-                buffers[buffer_idx].cursor_end();
-            }
-            Action::NewLine => {
-                buffers[buffer_idx].insert_newline();
-            }
-            Action::Delete => {
-                buffers[buffer_idx].delete();
-            }
-            Action::DeleteBackward => {
-                buffers[buffer_idx].delete_back();
-            }
-            Action::Cmd => {
-                *state = KeymapState::Cmd;
-            }
-            Action::Open => {
-                let path = renderer.line_buffer.text.clone();
-                let path = path.trim();
-                let mut size = editor.size;
-                let pos = Pos{row: 0, col: 0};
-                size.height -= 1;
-                let data = match Buffer::from_file(size, pos, path){
-                    Ok(file) => {
-                        file
-                    }
-                    Err(e) => {
-                        editor.alart_tx.send(e).await.unwrap();
-                        continued = true;
-                        continue;
-                    }
-                };
-                buffers.push(data);
-                buffer_idx = buffers.len() - 1;
-            }
-            Action::Normal => {
-                *state = KeymapState::Normal;
-            }
-            Action::Find => {
-                *state = KeymapState::Find;
-            }
-            Action::LineMode => {
-                *state = KeymapState::LineInsert;
-            }
-            Action:: LineInsert(c) => {
-                renderer.line_buffer.insert_char(c, false);
-            }
-            Action::LineInsertUpper(c) => {
-                renderer.line_buffer.insert_char(c, true);
-            }
-            Action::LineSpace => {
-                renderer.line_buffer.insert_char(' ', false);
-            }
-            Action::LineCursorForward => {
-                renderer.line_buffer.cursor_forward();
-            }
-            Action::LineCursorBackward => {
-                renderer.line_buffer.cursor_backward();
-            }
-            Action::LineStart => {
-                renderer.line_buffer.cursor_start();
-            }
-            Action::LineEnd => {
-                renderer.line_buffer.cursor_end();
-            }
-            Action::LineDelete => {
-                renderer.line_buffer.delete();
-            }
-            Action::LineDeleteBackward => {
-                renderer.line_buffer.delete_back();
-            }
-            Action::PreviousBlock => {
-            }
-            Action::NextBlock => {
-            }
-            a => {
-                debug!("Action: {:?}", a);
-            }
+        let func = action_map.get_mut(action.name.as_str());
+        let mut return_queue = Vec::new();
+        if let Some(f) = func {
+            let returns = f(&action);
+            return_queue.extend(returns);
         };
-        drop(buffers);
+        return_queue.extend(tabs[tab_idx].process_action(&action).unwrap());
+        return_queue.push(renderer.line_input.process_action(&action).unwrap());
+        for r in return_queue {
+            match r {
+                actions::ActionReturn::Good => (),
+                actions::ActionReturn::Stop => {
+                    *running = false;
+                    return ();
+                }
+                actions::ActionReturn::Continue => {
+                    continued = true;
+                }
+                actions::ActionReturn::Excute(a) => {
+                    pre_selected_action = Some(a);
+                }
+                actions::ActionReturn::Err(e) => {
+                    editor.alart_tx.send(e).await.unwrap();
+                }
+                actions::ActionReturn::NewBuffer(path) => {
+                    let mut size = editor.size;
+                    size.height -= 1;
+                    match path {
+                        Some(path) => {
+                            let new_buffer = match Buffer::from_file(size, Pos{row: 1, col: 0}, &path, editor.setting.line_numbers) {
+                                Ok(b) => b,
+                                Err(e) => {
+                                    editor.alart_tx.send(e).await.unwrap();
+                                    continue;
+                                }
+                            };
+                            tabs.push(Box::new(new_buffer));
+                        }
+                        None => {
+                            let new_buffer = Buffer::new(size, Pos{row: 1, col: 0}, editor.setting.line_numbers);
+                            tabs.push(Box::new(new_buffer));
+                        }
+                    }
+                    
+                    tab_idx = tabs.len() - 1;
+                }
+                actions::ActionReturn::State(s) => {
+                    *state = s;
+                }
+                actions::ActionReturn::Notice(s) => {
+                    renderer.line_input.notice = s;
+                }
+                actions::ActionReturn::ExcuteLine(s) => {
+                    renderer.line_input.action = Some(s);
+                }
+                actions::ActionReturn::ChangeTab(i) => {
+                    let len = tabs.len() as isize;
+                    tab_idx = ((tab_idx as isize + i) % len) as usize;
+                }
+            }
+        }
         drop(state);
-        renderer.render(buffer_idx).await.unwrap();
+        renderer.render(&mut tabs, tab_idx, clear).await.unwrap();
     }
 }
 
@@ -300,23 +227,22 @@ pub async fn run() -> Result<()> {
         width: rawsize.0,
         height: rawsize.1,
     };
-    let setting = serde_json::from_reader(std::fs::File::open("settings/default.json")?)?;
+    let setting: Setting = serde_json::from_reader(std::fs::File::open("settings/default.json")?)?;
     let mut buffer_size = size;
-    buffer_size.height -= 1;
-    let buffers = Arc::new(Mutex::new(vec![Buffer::new(buffer_size, Pos{row: 0, col: 0})]));
+    buffer_size.height -= 2;
+    let tabs: Vec<Box<dyn Tab>> = vec![Box::new(Buffer::new(buffer_size, Pos{row: 1, col: 0}, setting.line_numbers))];
     let state = Arc::new(Mutex::new(KeymapState::Normal));
     let running = Arc::new(Mutex::new(true));
     let editor= EditorInfo {
         size,
         setting,
-        buffers,
         state,
         running,
         alart_tx: alart_channel_tx,
     };
 
     let mut event_handler = EventHandler::new(action_channel_tx, editor.clone());
-    let mut renderer = Renderer::new(editor.clone(), stdout, alart_channel_rx);
+    let mut renderer = Renderer::new(editor.clone(), Box::new(stdout), alart_channel_rx);
 
     renderer.init().unwrap();
     
@@ -324,8 +250,51 @@ pub async fn run() -> Result<()> {
         event_handler.run().await.unwrap();
     });
 
-    process_action(action_channel_rx, editor.clone(), &mut renderer).await;
+    process_action(action_channel_rx, editor.clone(), &mut renderer, tabs).await;
 
     renderer.close().unwrap();    
     Ok(())
+}
+
+#[derive(Debug, Clone)]
+pub struct Action {
+    pub name: String,
+    pub args: Vec<Option<String>>,
+}
+
+pub fn parse_action(action: &str, line: &str) -> Result<Action> {
+    let r = Regex::new(r"^(\w+)(\((.+)\))?$").unwrap();
+    let name = String::from(match r.captures(&action) {
+        Some(c) => match c.get(1) {
+            Some(c) => c.as_str(),
+            None => Err(anyhow::anyhow!("parse_action: invalid action"))?,
+        },
+        None => Err(anyhow::anyhow!("parse_action: invalid action"))?,
+    });
+    let args = match r.captures(&action).unwrap().get(3) {
+        Some(c) => {
+            let args = c.as_str();
+            let mut args: Vec<_> = args.split(',').map(|s| Some(String::from(s))).collect();
+            for a in args.iter_mut() {
+                if let Some(s) = a {
+                    if s == "$line" {
+                        if line.is_empty() {
+                            *a = None;
+                        } else {
+                            *a = Some(String::from(line));
+                        }
+                    }
+                }
+            }
+            args
+        },
+        None => {
+            Vec::new()
+        }
+    };
+    let action = Action {
+        name,
+        args,
+    };
+    Ok(action)
 }

@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use strum_macros::{EnumString, IntoStaticStr};
 
-use crate::{Action, KeymapState};
+use crate::KeymapState;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, EnumString, IntoStaticStr, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum Key {
@@ -65,13 +65,13 @@ fn keycode_to_key(k: KeyCode) -> Key {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct Keymap {
-    keymap: HashMap<Action, Command>,
+    keymap: HashMap<String, Command>,
     #[serde(skip)]
-    keymap_reversed: HashMap<Command, Action>,
+    keymap_reversed: HashMap<Command, String>,
 }
 
 impl Keymap {
-    pub fn get_action(&self, key: &BTreeSet<Key>) -> Option<Action> {
+    pub fn get_action(&self, key: &BTreeSet<Key>) -> Option<String> {
         let is_char = |k: &Key| {
             match k {
                 Key::Char(_) => true,
@@ -81,7 +81,7 @@ impl Keymap {
         for (command, action) in &self.keymap_reversed {
             for k in &command.key {
                 if k == key {
-                    return Some(*action);
+                    return Some(action.clone());
                 } else if k.contains(&Key::CharAny) && key.iter().any(is_char) {
                     let mut com = k.clone();
                     com.remove(&Key::CharAny);
@@ -89,20 +89,14 @@ impl Keymap {
                     let key = key.iter().filter(|x| !is_char(x)).cloned().collect::<BTreeSet<_>>();
                     if key == com {
                         if let Key::Char(c) = char_code {
-                            match *action {
-                                Action::Insert(_) => {
-                                    return Some(Action::Insert(*c));
+                            let idx = action.find("$char");
+                            match idx {
+                                Some(idx) => {
+                                    let mut rtn = action.clone();
+                                    rtn.replace_range(idx..idx+5, &c.to_string());
+                                    return Some(rtn);
                                 }
-                                Action::InsertUpper(_) => {
-                                    return Some(Action::InsertUpper(*c));
-                                }
-                                Action::LineInsert(_) => {
-                                    return Some(Action::LineInsert(*c));
-                                }
-                                Action::LineInsertUpper(_) => {
-                                    return Some(Action::LineInsertUpper(*c));
-                                }
-                                _ => unreachable!("It contains Key::CharAny but the action not contains char field."),
+                                None => unreachable!("It contains Key::CharAny but the action not contains char field."),
                             }
                         }
                     }
@@ -171,7 +165,7 @@ pub fn open_keymaps(path: &str) -> Result<HashMap<KeymapState, Keymap>> {
     let mut rtn: HashMap<KeymapState, Keymap> = serde_json::from_value(json)?;
     for (_, keymap) in &mut rtn {
         for (action, command) in &mut keymap.keymap {
-            keymap.keymap_reversed.insert(command.clone(), *action);
+            keymap.keymap_reversed.insert(command.clone(), action.clone());
         }
     }
     Ok(rtn)
@@ -191,8 +185,8 @@ mod test{
             key: BTreeSet::new(),
         };
         command.key.insert(BTreeSet::from_iter(vec![Key::Ctrl, Key::Char('c')]));
-        keymap.keymap.insert(Action::Quit, command.clone());
-        keymap.keymap_reversed.insert(command, Action::Quit);
+        keymap.keymap.insert(String::from("Quit"), command.clone());
+        keymap.keymap_reversed.insert(command, String::from("Quit"));
         println!("{}", serde_json::to_string(&keymap).unwrap());
         assert_eq!( serde_json::to_string(&keymap).unwrap(), "{\"Quit\":[[\"Ctrl\",{\"Char\":\"c\"}]]}");
     }
@@ -205,7 +199,7 @@ mod test{
             key: BTreeSet::new(),
         };
         command.key.insert(BTreeSet::from_iter(vec![Key::Ctrl, Key::Char('c')]));
-        assert_eq!(keymap.keymap.get(&Action::Quit).unwrap(), &command);
+        assert_eq!(keymap.keymap.get("Quit").unwrap(), &command);
     }
 
     #[test]
@@ -219,6 +213,6 @@ mod test{
         let keymanager = open_keymaps("settings/keymap.json").unwrap();
         let keymap = keymanager.get(&KeymapState::Normal).unwrap();
         let action = keymap.get_action(&BTreeSet::from_iter(vec![Key::Char('c')])).unwrap();
-        assert_eq!(action, Action::Insert('c'));
+        assert_eq!(action, "Insert(C)");
     }
 }
