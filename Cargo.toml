@@ -1,14 +1,7 @@
-asdfas[package]
-name =df "editor"
+[package]
+name ="editor"
 version = "0.1.0"
-edition asdfasdf= "2021"
-back sung hooo byeongshin
-asdfasgasdovinsdoruqanwbfoupiansogfansiufbniaulosug
-]
-
-
-
-
+edition = "2021"
 [dependencies]
 anyhow = "1.0.95"
 async-stream = "0.3.6"
