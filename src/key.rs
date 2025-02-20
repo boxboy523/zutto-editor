@@ -2,6 +2,7 @@ use std::{collections::{BTreeSet, HashMap}, hash::Hash, str::FromStr};
 
 use anyhow::{Ok, Result};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use log::debug;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use strum_macros::{EnumString, IntoStaticStr};
@@ -38,6 +39,7 @@ pub enum Key {
     PrintScreen,
     Break,
     Escape,
+    BackTab,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -107,6 +109,7 @@ impl Keymap {
     }
     pub fn read(event: KeyEvent) -> Option<BTreeSet<Key>> {
         let mut rtn = BTreeSet::new();
+        debug!("{:?}", event);
         match event {
             KeyEvent {
                 modifiers,

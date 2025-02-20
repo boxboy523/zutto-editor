@@ -1,11 +1,11 @@
 use std::io::Write;
 
 use anyhow::{Error, Result};
-use crossterm::{cursor, event::{KeyboardEnhancementFlags, PushKeyboardEnhancementFlags}, execute, queue, style::{self, Print, StyledContent, Stylize}, terminal};
-use log::{debug, error};
+use crossterm::{cursor, event::{KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags}, execute, queue, style::{self, Print, StyledContent, Stylize}, terminal::{self, EnterAlternateScreen, LeaveAlternateScreen}};
+use log::error;
 use tokio::sync::mpsc;
 
-use crate::{buffer::Pos, lineinput::LineInput, tab::Tab, EditorInfo, KeymapState};
+use crate::{lineinput::LineInput, tab::Tab, EditorInfo, KeymapState};
 pub struct Renderer 
 {
     editor: EditorInfo,
@@ -85,23 +85,34 @@ impl Renderer
         }
         status_bar.render(&mut self.write)?;
         // End of rendering
-        execute!(self.write, cursor::Show)?;
         if *state == KeymapState::LineInsert {
             execute!(
                 self.write,
+                cursor::Show,
                 cursor::MoveTo(
                     lineinput_pos as u16 + lineinput_cur as u16,
                     self.editor.size.height - 1,
                 ),
             )?;
         } else {
-        execute!(
-                self.write,
-                cursor::MoveTo(
-                    cursor.col as u16,
-                    cursor.row as u16,
-                ),
-            )?;
+            match cursor {
+                Some(cursor) => {
+                    execute!(
+                        self.write,
+                        cursor::Show,
+                        cursor::MoveTo(
+                            cursor.col as u16,
+                            cursor.row as u16,
+                        ),
+                    )?;
+                }
+                None => {
+                    execute!(
+                        self.write,
+                        cursor::Hide,
+                    )?;
+                }
+            }
         }
         self.line_input.notice.clear();
         Ok(())
@@ -109,6 +120,10 @@ impl Renderer
 
     pub fn init(&mut self) -> Result<()> 
     {
+        execute!(
+            self.write,
+            EnterAlternateScreen,
+        )?;
         terminal::enable_raw_mode()?;
         execute!(
             self.write,
@@ -117,24 +132,32 @@ impl Renderer
             cursor::Show,
             cursor::MoveTo(0, 0),
         )?;
-        queue!(
+        /*queue!(
             self.write,
             PushKeyboardEnhancementFlags(
                 KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES |
                 KeyboardEnhancementFlags::REPORT_EVENT_TYPES |
                 KeyboardEnhancementFlags::REPORT_ALL_KEYS_AS_ESCAPE_CODES
             )
-        )?;
+        )?;*/
         Ok(())
     }
 
     pub fn close (&mut self) -> Result<()> {
+        /*queue!(
+            self.write,
+            PopKeyboardEnhancementFlags,
+        )?;*/
         execute!(
             self.write,
             terminal::Clear(terminal::ClearType::All),
             cursor::Show,
         )?;
         terminal::disable_raw_mode()?;
+        execute!(
+            self.write,
+            LeaveAlternateScreen,
+        )?;
         Ok(())
     }
 }

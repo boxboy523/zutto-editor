@@ -15,10 +15,11 @@
         "CursorDown": [["Ctrl", {"Char": "S"}], ["Down"]],
         "CursorStart": [["Ctrl", {"Char": "Q"}]],
         "CursorEnd": [["Ctrl", {"Char": "E"}]],
-        "NextWord": [["Alt", {"Char": "D"}], ["Alt", "Right"]],
-        "PreviousWord": [["Alt", {"Char": "A"}], ["Alt", "Left"]],
+        "CursorForwardWord": [["Alt", {"Char": "D"}], ["Alt", "Right"]],
+        "CursorBackwardWord": [["Alt", {"Char": "A"}], ["Alt", "Left"]],
         "NextBlock": [["Alt", {"Char": "S"}], ["Alt", "Down"]],
         "PreviousBlock": [["Alt", {"Char": "W"}], ["Alt", "Up"]],
+        "SelectStart": [["Alt", "Space"]],
         "Copy": [["Ctrl", {"Char": "C"}]],
         "Cut": [["Ctrl", {"Char": "X"}]],
         "Paste": [["Ctrl", {"Char": "V"}]],
@@ -28,7 +29,7 @@
         "FindMode": [["Ctrl", {"Char": "F"}]],
         "LineMode": [["Ctrl", {"Char": "L"}], ["Ctrl", {"Char": "/"}]],
         "NextTab": [["Ctrl", "Tab"]],
-        "PrevTab": [["Ctrl", "Shift", "Tab"]]
+        "PrevTab": [["Ctrl", "BackTab"]]
     },
     "Cmd": {
         "Quit": [[{"Char": "Q"}]],
@@ -40,7 +41,7 @@
         "LineMode": [[{"Char": "/"}]],
         "NormalMode": [["Space"], ["Alt", "Space"]],
         "NextTab": [["Tab"]],
-        "PrevTab": [["Shift", "Tab"]]
+        "PrevTab": [["BackTab"]]
     },
     "Find": {
         "LineMode": [[{"Char": "/"}, {"Char": "F"}]],

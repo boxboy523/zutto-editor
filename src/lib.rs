@@ -1,35 +1,26 @@
-use std::{collections::HashMap, hash::Hash, sync::Arc};
+use std::{collections::HashMap, hash::Hash, path::PathBuf, sync::Arc};
 
 use anyhow::{Result, Error};
-use buffer::{Buffer, Pos};
 use key::{open_keymaps, Keymap};
 use crossterm::{event::{self, EventStream}, terminal};
 use log::debug;
 use regex::Regex;
 use render::Renderer;
 use strum_macros::IntoStaticStr;
-use tab::Tab;
+use tab::{buffer::Buffer, directory, Pos, Size, Tab};
 use tokio::sync::{mpsc::{self, Receiver}, Mutex};
 use tokio_stream::StreamExt;
 use serde::{Deserialize, Serialize};
 
 pub mod key;
-pub mod buffer;
 pub mod render;
 pub mod actions;
 pub mod tab;
 pub mod lineinput;
-
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 enum TabType {
-    Spaces,
-    Tabs,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub struct Size {
-    pub width: u16,
-    pub height: u16,
+    Space,
+    Tab,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -121,7 +112,7 @@ async fn process_action(
     renderer: &mut Renderer,
     mut tabs : Vec<Box<dyn Tab>>,
 ) {
-    type F = Box<dyn FnMut(&Action) -> Vec<actions::ActionReturn>>;
+    type F = Box<dyn FnMut(&Action) -> Result<Vec<actions::ActionReturn>>>;
     let mut continued = false;
     let mut pre_selected_action = None;
     let mut tab_idx = 0;
@@ -135,12 +126,16 @@ async fn process_action(
     action_map.insert("LineMode", Box::new(actions::line_mode));
     action_map.insert("NextTab", Box::new(actions::next_tab));
     action_map.insert("PrevTab", Box::new(actions::prev_tab));
+    action_map.insert("Open", Box::new(actions::open));
     
     renderer.render(&mut tabs, tab_idx, clear).await.unwrap();
     loop {
         if continued {
             renderer.render(&mut tabs, tab_idx, clear).await.unwrap();
             continued = false;
+        }
+        if clear {
+            clear = false;
         }
         let action = if let Some(a) = pre_selected_action {
             pre_selected_action = None;
@@ -154,7 +149,10 @@ async fn process_action(
         let func = action_map.get_mut(action.name.as_str());
         let mut return_queue = Vec::new();
         if let Some(f) = func {
-            let returns = f(&action);
+            let returns = match f(&action) {
+                Ok(r) => r,
+                Err(e) => vec![actions::ActionReturn::Err(e)]
+            };
             return_queue.extend(returns);
         };
         return_queue.extend(tabs[tab_idx].process_action(&action).unwrap());
@@ -177,10 +175,10 @@ async fn process_action(
                 }
                 actions::ActionReturn::NewBuffer(path) => {
                     let mut size = editor.size;
-                    size.height -= 1;
+                    size.height -= 2;
                     match path {
                         Some(path) => {
-                            let new_buffer = match Buffer::from_file(size, Pos{row: 1, col: 0}, &path, editor.setting.line_numbers) {
+                            let new_buffer = match Buffer::from_file(size, Pos{row: 1, col: 0}, &path, editor.setting.clone()) {
                                 Ok(b) => b,
                                 Err(e) => {
                                     editor.alart_tx.send(e).await.unwrap();
@@ -190,7 +188,7 @@ async fn process_action(
                             tabs.push(Box::new(new_buffer));
                         }
                         None => {
-                            let new_buffer = Buffer::new(size, Pos{row: 1, col: 0}, editor.setting.line_numbers);
+                            let new_buffer = Buffer::new(size, Pos{row: 1, col: 0}, editor.setting.clone());
                             tabs.push(Box::new(new_buffer));
                         }
                     }
@@ -208,7 +206,15 @@ async fn process_action(
                 }
                 actions::ActionReturn::ChangeTab(i) => {
                     let len = tabs.len() as isize;
-                    tab_idx = ((tab_idx as isize + i) % len) as usize;
+                    tab_idx = ((tab_idx as isize + i + len) % len) as usize;
+                    clear = true;
+                }
+                actions::ActionReturn::NewDir(path) => {
+                    let mut size = editor.size;
+                    size.height -= 2;
+                    let new_dir = directory::Directory::new(path, Pos{row: 1, col: 0}, size);
+                    tabs.push(Box::new(new_dir));
+                    tab_idx = tabs.len() - 1;
                 }
             }
         }
@@ -217,7 +223,7 @@ async fn process_action(
     }
 }
 
-pub async fn run() -> Result<()> {
+pub async fn run(path: Option<PathBuf>) -> Result<()> {
     log4rs::init_file("log4rs.yaml", Default::default())?;
     let stdout = std::io::stdout();
     let (action_channel_tx, action_channel_rx) = tokio::sync::mpsc::channel(100);
@@ -230,7 +236,10 @@ pub async fn run() -> Result<()> {
     let setting: Setting = serde_json::from_reader(std::fs::File::open("settings/default.json")?)?;
     let mut buffer_size = size;
     buffer_size.height -= 2;
-    let tabs: Vec<Box<dyn Tab>> = vec![Box::new(Buffer::new(buffer_size, Pos{row: 1, col: 0}, setting.line_numbers))];
+    let tabs: Vec<Box<dyn Tab>> = match path {
+        Some(p) => vec![Box::new(Buffer::from_file(buffer_size, Pos{row: 1, col: 0}, &p, setting.clone())?)],
+        None => vec![Box::new(Buffer::new(buffer_size, Pos{row: 1, col: 0}, setting.clone()))]
+    };
     let state = Arc::new(Mutex::new(KeymapState::Normal));
     let running = Arc::new(Mutex::new(true));
     let editor= EditorInfo {
@@ -252,7 +261,7 @@ pub async fn run() -> Result<()> {
 
     process_action(action_channel_rx, editor.clone(), &mut renderer, tabs).await;
 
-    renderer.close().unwrap();    
+    renderer.close().unwrap();
     Ok(())
 }
 
