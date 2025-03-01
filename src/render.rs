@@ -1,52 +1,65 @@
-use std::io::Write;
+use std::{io::Write, sync::Arc};
 
 use anyhow::{Error, Result};
-use crossterm::{cursor, event::{KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags}, execute, queue, style::{self, Print, StyledContent, Stylize}, terminal::{self, EnterAlternateScreen, LeaveAlternateScreen}};
+use crossterm::{cursor, execute, queue, style::{self, Colors, Print, StyledContent, Stylize}, terminal::{self, EnterAlternateScreen, LeaveAlternateScreen}};
 use log::error;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Mutex};
 
-use crate::{lineinput::LineInput, tab::Tab, EditorInfo, KeymapState};
-pub struct Renderer 
+use crate::{lineinput::LineInput, syncol_to_crosscol, tab::Tab, EditorInfo, KeymapState};
+
+#[derive(Debug)]
+pub struct Renderer<W>
+where
+    W: Write,
 {
     editor: EditorInfo,
-    write: Box<dyn Write>,
+    write: W,
     alart_rx: mpsc::Receiver<Error>,
-    pub line_input: LineInput,
 }
 
-impl std::fmt::Debug for Renderer {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Renderer")
-    }
-}
-
-impl Renderer 
+impl<W> Renderer<W>
+where
+    W: Write,
 {
-    pub fn new(editor: EditorInfo, w: Box<dyn Write>, alart_rx: mpsc::Receiver<Error>) -> Self 
+    pub fn new(editor: EditorInfo, w: W, alart_rx: mpsc::Receiver<Error>) -> Self 
     {
-        let line_input = LineInput::new(
-            (editor.size.width / 2 - 1) as usize,
-        );
         Self {
             editor,
             write: w,
             alart_rx,
-            line_input,
         }
     }
 
-    pub async fn render(&mut self, tabs: &mut Vec<Box<dyn Tab>>, idx: usize, clear: bool) -> Result<()> {
+    pub async fn render<T>(&mut self, idx: usize, clear: bool) -> Result<()> 
+    where
+    {
         let state = self.editor.state.lock().await;
-        let cursor = tabs[idx].get_cursor();
-        execute!(
+        let line_input = self.editor.line_input.lock().await;
+        let tabs = self.editor.tabs.lock().await;
+        let cursor = match tabs[idx] {
+            Tab::Buffer(ref buffer) => buffer.get_cursor(),
+            Tab::Directory(ref directory) => directory.get_cursor(),
+            Tab::Shell(ref shell) => shell.get_cursor(),
+        };
+        if clear {
+            queue!(self.write, terminal::Clear(terminal::ClearType::All))?;
+        }
+        queue!(
             self.write,
             cursor::Hide,
             cursor::MoveTo(0, 0),
         )?;
-        if clear {
-            execute!(self.write, terminal::Clear(terminal::ClearType::All))?;
+        match tabs[idx]{ 
+            Tab::Buffer(ref mut buffer) => {
+                buffer.render(&mut self.write)?;
+            }
+            Tab::Directory(ref mut directory) => {
+                directory.render(&mut self.write)?;
+            }
+            Tab::Shell(ref mut shell) => {
+                shell.render(&mut self.write).await?;
+            }
         }
-        tabs[idx].render(&mut self.write)?;
         // Render the tab bar
         let mut tab_bar = Bar::new(self.editor.size.width as usize, 0);
         let tab_ratio = if 1.0 / tabs.len() as f32 > 0.3 {
@@ -55,7 +68,11 @@ impl Renderer
             0.3
         };
         for (i, tab) in tabs.iter().enumerate() {
-            let name = tab.get_name();
+            let name = match tab {
+                Tab::Buffer(buffer) => buffer.name(),
+                Tab::Directory(directory) => directory.name(),
+                Tab::Shell(shell) => shell.name(),
+            };
             let s = name.clone();
             let s = if i == idx {
                 s.bold().reverse()
@@ -77,8 +94,8 @@ impl Renderer
         } else {
             let keystate_str: &'static str = (*state).into();
             let keystate_str = format!("State: {}", keystate_str);
-            let line = format!("{}{}",self.line_input.notice, self.line_input.text);
-            lineinput_cur = self.line_input.cur + self.line_input.notice.len();
+            let line = format!("{}{}",line_input.notice, line_input.text);
+            lineinput_cur = line_input.cur + line_input.notice.len();
             status_bar.background = " ".reverse();
             status_bar.add(keystate_str.clone().reverse(), 0.0, keystate_str.len());
             lineinput_pos = status_bar.add(line.clone().white(), 0.2, line.len());
@@ -114,7 +131,6 @@ impl Renderer
                 }
             }
         }
-        self.line_input.notice.clear();
         Ok(())
     }
 
@@ -128,7 +144,6 @@ impl Renderer
         execute!(
             self.write,
             terminal::Clear(terminal::ClearType::All),
-            style::ResetColor,
             cursor::Show,
             cursor::MoveTo(0, 0),
         )?;
@@ -148,7 +163,7 @@ impl Renderer
             self.write,
             PopKeyboardEnhancementFlags,
         )?;*/
-        execute!(
+        queue!(
             self.write,
             terminal::Clear(terminal::ClearType::All),
             cursor::Show,
@@ -184,7 +199,9 @@ impl Bar {
         (self.len as f32 * ratio) as usize
     }
 
-    fn render(&self, write: &mut Box<dyn Write>) -> Result<()> {
+    fn render<W>(&self, write: &mut W) -> Result<()> 
+    where W: Write
+    {
         let mut bar = vec![true; self.len];
         let strings = self.strings.iter().map(|(s, r, l)| {
             let pos = (self.len as f32 * r) as usize;

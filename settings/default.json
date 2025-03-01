@@ -1,5 +1,7 @@
 {
     "line_numbers": true,
     "tab_size": 4,
-    "tab_type": "Space"
+    "tab_type": "Tab",
+    "show_spaces": true,
+    "theme": "base16-ocean.light"
 }

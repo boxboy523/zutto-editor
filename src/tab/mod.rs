@@ -1,23 +1,25 @@
 use std::{fmt::Debug, io::Write};
 
 use anyhow::Result;
+use async_trait::async_trait;
+use syntect::highlighting::Theme;
 
 use crate::{actions::ActionReturn, Action};
 
 pub mod buffer;
 pub mod directory;
-pub mod terminal;
+pub mod shell;
 
 #[derive(Debug, Clone, Copy)]
 pub struct Pos {
-    pub row: usize,
-    pub col: usize,
+    pub row: u16,
+    pub col: u16,
 }
 
 #[derive(Debug, Clone, Copy)]
 pub struct Cursor {
-    pub row: usize,
-    pub col: usize,
+    pub row: u16,
+    pub col: u16,
 }
 
 
@@ -27,13 +29,11 @@ pub struct Size {
     pub height: u16,
 }
 
-pub trait Tab: Debug {
-    fn render(&self, write: &mut Box<dyn Write>) -> Result<()>;
-    fn get_pos(&self) -> Pos;
-    fn get_name(&self) -> String;
-    fn get_size(&self) -> Size;
-    fn get_cursor(&self) -> Option<Cursor>;
-    fn process_action(&mut self, action: &Action) -> Result<Vec<ActionReturn>>;
+#[derive(Debug)]
+pub enum Tab{
+    Buffer(buffer::Buffer),
+    Directory(directory::Directory),
+    Shell(shell::Shell),
 }
 
 pub fn numlen (mut num: usize) -> usize {

@@ -7,6 +7,7 @@
         "InsertNewline": [["Enter"]],
         "InsertNewlineBelow": [["Ctrl", "Enter"]],
         "InsertNewlineAbove": [["Ctrl", "Shift", "Enter"]],
+        "InsertComma": [["Comma"]],
         "Delete": [["Backspace"]],
         "DeleteBackward": [["Delete"], ["Ctrl", "Backspace"]],
         "CursorForward": [["Ctrl", {"Char": "D"}], ["Right"]],
@@ -29,7 +30,9 @@
         "FindMode": [["Ctrl", {"Char": "F"}]],
         "LineMode": [["Ctrl", {"Char": "L"}], ["Ctrl", {"Char": "/"}]],
         "NextTab": [["Ctrl", "Tab"]],
-        "PrevTab": [["Ctrl", "BackTab"]]
+        "PrevTab": [["Ctrl", "BackTab"]],
+        "Shell": [["Ctrl", {"Char": "T"}]],
+        "CloseTab($idx)": [["Ctrl", {"Char": "P"}]]
     },
     "Cmd": {
         "Quit": [[{"Char": "Q"}]],
@@ -41,7 +44,8 @@
         "LineMode": [[{"Char": "/"}]],
         "NormalMode": [["Space"], ["Alt", "Space"]],
         "NextTab": [["Tab"]],
-        "PrevTab": [["BackTab"]]
+        "PrevTab": [["BackTab"]],
+        "Shell": [[{"Char": "T"}]]
     },
     "Find": {
         "LineMode": [[{"Char": "/"}, {"Char": "F"}]],

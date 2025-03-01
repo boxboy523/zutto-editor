@@ -3,7 +3,6 @@ use std::{fs, path::{Path, PathBuf}};
 use crate::{Action, KeymapState};
 use anyhow::{Error, Result};
 pub enum ActionReturn {
-    Good,
     Continue,
     Stop,
     Err(Error),
@@ -11,9 +10,11 @@ pub enum ActionReturn {
     ExcuteLine(String),
     NewBuffer(Option<PathBuf>),
     NewDir(PathBuf),
+    NewShell,
     State(KeymapState),
     Notice(String),
     ChangeTab(isize),
+    CloseTab(usize),
 } 
 
 pub fn normal_mode(_: &Action) -> Result<Vec<ActionReturn>> {
@@ -72,4 +73,13 @@ pub fn open(action: &Action) -> Result<Vec<ActionReturn>> {
             ]);
         }
     }
+}
+
+pub fn close_tab(action: &Action) -> Result<Vec<ActionReturn>> {
+    let tab_idx = action.args[0].as_ref().unwrap().parse::<usize>().unwrap();
+    Ok(vec![ActionReturn::CloseTab(tab_idx)])
+}
+
+pub fn new_shell(_: &Action) -> Result<Vec<ActionReturn>> {
+    Ok(vec![ActionReturn::NewShell])
 }

@@ -1,4 +1,4 @@
-use std::{collections::HashMap, hash::Hash, path::PathBuf, sync::Arc};
+use std::{collections::HashMap, hash::Hash, io, path::PathBuf, sync::Arc};
 
 use anyhow::{Result, Error};
 use key::{open_keymaps, Keymap};
@@ -7,16 +7,18 @@ use log::debug;
 use regex::Regex;
 use render::Renderer;
 use strum_macros::IntoStaticStr;
+use syntect::highlighting::ThemeSet;
 use tab::{buffer::Buffer, directory, Pos, Size, Tab};
 use tokio::sync::{mpsc::{self, Receiver}, Mutex};
 use tokio_stream::StreamExt;
-use serde::{Deserialize, Serialize};
+use serde::{de, Deserialize, Serialize};
 
 pub mod key;
 pub mod render;
 pub mod actions;
 pub mod tab;
 pub mod lineinput;
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 enum TabType {
     Space,
@@ -28,6 +30,8 @@ pub struct Setting {
     line_numbers: bool,
     tab_size: usize,
     tab_type: TabType,
+    show_spaces: bool,
+    theme: String,
 }
 
 #[derive(Debug, IntoStaticStr, Clone, Copy, Hash, Serialize, Deserialize,PartialEq, Eq)]
@@ -104,14 +108,16 @@ pub struct EditorInfo
     pub state: Arc<Mutex<KeymapState>>,
     pub running: Arc<Mutex<bool>>,
     pub alart_tx: mpsc::Sender<Error>,
+    pub tabs: Arc<Mutex<Vec<Tab>>>,
+    let 
+    pub line_input: Arc<Mutex<lineinput::LineInput>>,
 }
 
 async fn process_action(
     mut action_rx: Receiver<String>, 
     editor: EditorInfo,
-    renderer: &mut Renderer,
-    mut tabs : Vec<Box<dyn Tab>>,
-) {
+) 
+{
     type F = Box<dyn FnMut(&Action) -> Result<Vec<actions::ActionReturn>>>;
     let mut continued = false;
     let mut pre_selected_action = None;
@@ -127,11 +133,12 @@ async fn process_action(
     action_map.insert("NextTab", Box::new(actions::next_tab));
     action_map.insert("PrevTab", Box::new(actions::prev_tab));
     action_map.insert("Open", Box::new(actions::open));
+    action_map.insert("CloseTab", Box::new(actions::close_tab));
+    action_map.insert("Shell", Box::new(actions::new_shell));
     
-    renderer.render(&mut tabs, tab_idx, clear).await.unwrap();
     loop {
+        let mut line_input = editor.line_input.lock().await;
         if continued {
-            renderer.render(&mut tabs, tab_idx, clear).await.unwrap();
             continued = false;
         }
         if clear {
@@ -142,10 +149,11 @@ async fn process_action(
             a
         } else {
             let action = action_rx.recv().await.unwrap();
-            parse_action(&action, &renderer.line_input.text).unwrap()
+            parse_action(&action, &line_input.text, tab_idx).unwrap()
         };
         let mut state = editor.state.lock().await;
         let mut running = editor.running.lock().await;
+        let mut tabs = editor.tabs.lock().await;
         let func = action_map.get_mut(action.name.as_str());
         let mut return_queue = Vec::new();
         if let Some(f) = func {
@@ -155,11 +163,20 @@ async fn process_action(
             };
             return_queue.extend(returns);
         };
-        return_queue.extend(tabs[tab_idx].process_action(&action).unwrap());
-        return_queue.push(renderer.line_input.process_action(&action).unwrap());
+        return_queue.extend(match tabs[tab_idx] {
+            Tab::Buffer(ref mut buffer) => {
+                buffer.process_action(&action).await.unwrap()
+            }
+            Tab::Directory(ref mut directory) => {
+                directory.process_action(&action).await.unwrap()
+            }
+            Tab::Shell(ref mut shell) => {
+                shell.process_action(&action).await.unwrap()
+        }
+        });
+        return_queue.extend(renderer.line_input.process_action(&action, tab_idx).unwrap());
         for r in return_queue {
             match r {
-                actions::ActionReturn::Good => (),
                 actions::ActionReturn::Stop => {
                     *running = false;
                     return ();
@@ -178,18 +195,18 @@ async fn process_action(
                     size.height -= 2;
                     match path {
                         Some(path) => {
-                            let new_buffer = match Buffer::from_file(size, Pos{row: 1, col: 0}, &path, editor.setting.clone()) {
+                            let new_buffer = match Buffer::from_file(size, Pos{row: 1, col: 0}, &path, editor.setting.clone(), tabs.len()) {
                                 Ok(b) => b,
                                 Err(e) => {
                                     editor.alart_tx.send(e).await.unwrap();
                                     continue;
                                 }
                             };
-                            tabs.push(Box::new(new_buffer));
+                            tabs.push(Tab::Buffer(new_buffer));
                         }
                         None => {
-                            let new_buffer = Buffer::new(size, Pos{row: 1, col: 0}, editor.setting.clone());
-                            tabs.push(Box::new(new_buffer));
+                            let new_buffer = Buffer::new(size, Pos{row: 1, col: 0}, editor.setting.clone(), tabs.len());
+                            tabs.push(Tab::Buffer(new_buffer));
                         }
                     }
                     
@@ -212,14 +229,51 @@ async fn process_action(
                 actions::ActionReturn::NewDir(path) => {
                     let mut size = editor.size;
                     size.height -= 2;
-                    let new_dir = directory::Directory::new(path, Pos{row: 1, col: 0}, size);
-                    tabs.push(Box::new(new_dir));
+                    let new_dir = match directory::Directory::new(path, Pos{row: 1, col: 0}, size, tabs.len()) {
+                        Ok(d) => d,
+                        Err(e) => {
+                            editor.alart_tx.send(e).await.unwrap();
+                            continue;
+                        }
+                    };
+                    tabs.push(Tab::Directory(new_dir));
+                    tab_idx = tabs.len() - 1;
+                }
+                actions::ActionReturn::CloseTab(i) => {
+                    tabs.remove(i);
+                    if tab_idx >= i {
+                        tab_idx -= 1;
+                    }
+                    if tab_idx == i {
+                        clear = true;
+                    }
+                    for i in 0..tabs.len() {
+                        match &mut tabs[i] {
+                            Tab::Buffer(b) => {
+                                b.tab_idx = i;
+                            }
+                            Tab::Directory(d) => {
+                                d.tab_idx = i;
+                            }
+                            Tab::Shell(s) => {
+                                s.tab_idx = i;
+                            }
+                        }
+                    }
+                    if tabs.len() == 0 {
+                        *running = false;
+                        return ();
+                    }
+                }
+                actions::ActionReturn::NewShell => {
+                    let mut size = editor.size;
+                    size.height -= 2;
+                    let shell = tab::shell::Shell::new(Pos{row: 1, col: 0}, size, tabs.len());
+                    tabs.push(Tab::Shell(shell));
                     tab_idx = tabs.len() - 1;
                 }
             }
         }
-        drop(state);
-        renderer.render(&mut tabs, tab_idx, clear).await.unwrap();
     }
 }
 
@@ -236,18 +290,28 @@ pub async fn run(path: Option<PathBuf>) -> Result<()> {
     let setting: Setting = serde_json::from_reader(std::fs::File::open("settings/default.json")?)?;
     let mut buffer_size = size;
     buffer_size.height -= 2;
-    let tabs: Vec<Box<dyn Tab>> = match path {
-        Some(p) => vec![Box::new(Buffer::from_file(buffer_size, Pos{row: 1, col: 0}, &p, setting.clone())?)],
-        None => vec![Box::new(Buffer::new(buffer_size, Pos{row: 1, col: 0}, setting.clone()))]
+    let tabs: Vec<Tab> = match path {
+        Some(p) => {
+            if p.is_dir() {
+                vec![Tab::Directory(directory::Directory::new(p, Pos{row: 1, col: 0}, size, 0)?)]
+            } else {
+                vec![Tab::Buffer(Buffer::from_file(buffer_size, Pos{row: 1, col: 0}, &p, setting.clone(), 0)?)]
+            }
+        }
+        None => vec![Tab::Buffer(Buffer::new(buffer_size, Pos{row: 1, col: 0}, setting.clone(), 0))]
     };
+    let tabs = Arc::new(Mutex::new(tabs));
     let state = Arc::new(Mutex::new(KeymapState::Normal));
     let running = Arc::new(Mutex::new(true));
+    let line_input = Arc::new(Mutex::new(lineinput::LineInput::new(size.width as usize)));
     let editor= EditorInfo {
         size,
         setting,
         state,
         running,
         alart_tx: alart_channel_tx,
+        tabs,
+        line_input,
     };
 
     let mut event_handler = EventHandler::new(action_channel_tx, editor.clone());
@@ -259,7 +323,18 @@ pub async fn run(path: Option<PathBuf>) -> Result<()> {
         event_handler.run().await.unwrap();
     });
 
-    process_action(action_channel_rx, editor.clone(), &mut renderer, tabs).await;
+    tokio::spawn(async move {
+        process_action(action_channel_rx, editor.clone(), tabs).await;
+    });
+
+    loop {
+        let running = editor.running.lock().await;
+        if *running == false {
+            break;
+        }
+        renderer.render::<io::Stdout>(0, false).await.unwrap();
+    }
+    
 
     renderer.close().unwrap();
     Ok(())
@@ -271,7 +346,7 @@ pub struct Action {
     pub args: Vec<Option<String>>,
 }
 
-pub fn parse_action(action: &str, line: &str) -> Result<Action> {
+pub fn parse_action(action: &str, line: &str, idx: usize) -> Result<Action> {
     let r = Regex::new(r"^(\w+)(\((.+)\))?$").unwrap();
     let name = String::from(match r.captures(&action) {
         Some(c) => match c.get(1) {
@@ -286,14 +361,20 @@ pub fn parse_action(action: &str, line: &str) -> Result<Action> {
             let mut args: Vec<_> = args.split(',').map(|s| Some(String::from(s))).collect();
             for a in args.iter_mut() {
                 if let Some(s) = a {
-                    if s == "$line" {
-                        if line.is_empty() {
-                            *a = None;
-                        } else {
-                            *a = Some(String::from(line));
+                    match s.as_str() {
+                        "$line" => {
+                            if line.len() == 0 {
+                                *a = None;
+                            } else {
+                                *a = Some(String::from(line));
+                            }
                         }
+                        "$idx" => {
+                            *s = idx.to_string();
+                        }
+                        _ => {}
                     }
-                }
+                };
             }
             args
         },
@@ -306,4 +387,12 @@ pub fn parse_action(action: &str, line: &str) -> Result<Action> {
         args,
     };
     Ok(action)
+}
+
+pub fn syncol_to_crosscol(color: syntect::highlighting::Color) -> crossterm::style::Color {
+    crossterm::style::Color::Rgb {
+        r: color.r,
+        g: color.g,
+        b: color.b,
+    }
 }

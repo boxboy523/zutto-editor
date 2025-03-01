@@ -100,7 +100,7 @@ impl LineInput {
         self.log_idx = self.log.len();
     }
 
-    pub fn process_action(&mut self, action: &Action) -> Result<ActionReturn> {
+    pub fn process_action(&mut self, action: &Action, idx: usize) -> Result<Vec<ActionReturn>> {
         let action_name = &action.name;
         let mut action_args = action.args.clone();
         match action_name.as_str() {
@@ -138,25 +138,25 @@ impl LineInput {
                 match action {
                     Some(a) => {
                         self.action = None;
-                        let action = parse_action(&a, &self.text);
+                        let action = parse_action(&a, &self.text, idx);
                         self.clear();
                         match action{
-                            Ok(a) => return Ok(ActionReturn::Excute(a)),
-                            Err(e) => return Ok(ActionReturn::Err(e)),
+                            Ok(a) => return Ok(vec![ActionReturn::Excute(a)]),
+                            Err(e) => return Ok(vec![ActionReturn::Err(e)]),
                         };
                     }
                     None => {
-                        let action = parse_action(&self.text, &self.text);
+                        let action = parse_action(&self.text, &self.text, idx);
                         self.clear();
                         match action {
-                            Ok(a) => return Ok(ActionReturn::Excute(a)),
-                            Err(e) => return Ok(ActionReturn::Err(e)),
+                            Ok(a) => return Ok(vec![ActionReturn::Excute(a)]),
+                            Err(e) => return Ok(vec![ActionReturn::Err(e)]),
                         };
                     }
                 }
             }
             _ => (),
         }
-        Ok(ActionReturn::Good) 
+        Ok(vec![])
     }
 }

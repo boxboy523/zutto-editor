@@ -40,6 +40,7 @@ pub enum Key {
     Break,
     Escape,
     BackTab,
+    Comma,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -51,17 +52,24 @@ struct Command {
 fn keycode_to_key(k: KeyCode) -> Key {
     let s = match k {
         KeyCode::Char(' ') => "Space".to_string(),
-        KeyCode::Char(c) => format!("{}", c.to_uppercase()),
+        KeyCode::Char(',') => "Comma".to_string(),
+        KeyCode::Char(c) => {
+            let ch = c.to_uppercase().next().unwrap();
+            return Key::Char(ch);
+        }
         KeyCode::F(n) => format!("F{}", n),
         _ => format!("{:?}", k),
     };
-    if s.len() == 1 {
-        Key::Char(s.chars().next().unwrap())
-    } else if s.len() < 4 && s.starts_with('F') {
-        Key::F(s[1..].parse().unwrap())
+    let key;
+    if s.len() < 4 && s.len() > 1 && s.starts_with('F') {
+        key = Some(Key::F(s[1..].parse().unwrap()));
     } else {
-        Key::from_str(s.as_str()).unwrap()
+        key = match Key::from_str(s.as_str()) {
+            std::result::Result::Ok(k) => Some(k),
+            Err(_) => None,
+        }
     }
+    key.unwrap()
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -109,7 +117,7 @@ impl Keymap {
     }
     pub fn read(event: KeyEvent) -> Option<BTreeSet<Key>> {
         let mut rtn = BTreeSet::new();
-        debug!("{:?}", event);
+
         match event {
             KeyEvent {
                 modifiers,
